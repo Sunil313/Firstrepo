@@ -1,0 +1,98 @@
+
+Task 1: For the below task we have the import the below packages.
+requests for API calls
+azure.identity and azure.keyvault.secrets for Key Vault integration
+azure.storage.blob for uploading files to Blob storage
+pandas and pyarrow for creating Parquet files
+
+
+import os
+import requests
+import pandas as pd
+from datetime import datetime
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
+from azure.storage.blob import BlobServiceClient
+from io import BytesIO
+
+# Coordinates list
+locations = [
+    {"lat": "54.6778816", "lon": "-5.9249199"},
+    {"lat": "52.6362", "lon": "-1.1331969"},
+    {"lat": "51.456659", "lon": "-0.9696512"},
+    {"lat": "54.1775283", "lon": "-6.337506"},
+    {"lat": "51.4867", "lon": "0.2433"},
+    {"lat": "53.4071991", "lon": "-2.99168"},
+    {"lat": "53.3045372", "lon": "-1.1028469453936067"},
+    {"lat": "55.9007", "lon": "-3.5181"},
+    {"lat": "53.5227681", "lon": "-1.1335312"},
+    {"lat": "52.802742", "lon": "-1.629917"}
+]
+
+# Azure Key Vault details
+KEY_VAULT_NAME = os.getenv("AZURE_KEY_VAULT_NAME")
+KEY_VAULT_URI = f"https://{KEY_VAULT_NAME}.vault.azure.net/"
+
+# Set up Azure Key Vault client
+credential = DefaultAzureCredential()
+client = SecretClient(vault_url=KEY_VAULT_URI, credential=credential)
+
+# Retrieve secrets from Key Vault
+api_key = client.get_secret("OpenWeatherAPIKey").value
+blob_conn_str = client.get_secret("AzureBlobConnectionString").value
+container_name = client.get_secret("BlobContainerName").value
+
+# Azure Blob service client
+blob_service_client = BlobServiceClient.from_connection_string(blob_conn_str)
+container_client = blob_service_client.get_container_client(container_name)
+
+# OpenWeather API URL
+api_url = "http://api.openweathermap.org/data/2.5/weather"
+
+# Function to get weather data for each location
+def fetch_weather_data():
+    weather_data = []
+    for loc in locations:
+        params = {
+            'lat': loc['lat'],
+            'lon': loc['lon'],
+            'appid': api_key,
+            'units': 'metric'
+        }
+        response = requests.get(api_url, params=params)
+        if response.status_code == 200:
+            data = response.json()
+            weather_data.append({
+                "latitude": loc['lat'],
+                "longitude": loc['lon'],
+                "temperature": data['main']['temp'],
+                "humidity": data['main']['humidity'],
+                "pressure": data['main']['pressure'],
+                "wind_speed": data['wind']['speed'],
+                "weather": data['weather'][0]['description'],
+                "timestamp": datetime.utcnow()
+            })
+    return weather_data
+
+# Function to save weather data to Azure Blob Storage as Parquet
+def save_to_blob(weather_data):
+    df = pd.DataFrame(weather_data)
+    
+    # Create Parquet file in memory
+    parquet_buffer = BytesIO()
+    df.to_parquet(parquet_buffer, engine='pyarrow')
+    
+    # Generate file name with timestamp
+    timestamp_str = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    file_name = f"weather_data_{timestamp_str}.parquet"
+    
+    # Upload to Azure Blob Storage
+    blob_client = container_client.get_blob_client(file_name)
+    blob_client.upload_blob(parquet_buffer.getvalue())
+    print(f"Uploaded {file_name} to Blob Storage")
+
+# Main task execution
+if __name__ == "__main__":
+    weather_data = fetch_weather_data()
+    if weather_data:
+        save_to_blob(weather_data)
